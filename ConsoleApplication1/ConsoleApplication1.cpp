@@ -6,7 +6,7 @@
 
 // forward declare armadillo function instead of making a header file for it
 void runArmadillo();
-void testnew1();
+int testnew1();
 
 
 extern "C" {

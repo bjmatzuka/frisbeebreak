@@ -53,8 +53,8 @@ int ODEtest1()
 	/* Create serial vector of length NEQ for I.C. */
 	y = N_VNew_Serial(2);
 
-		// Bindel Scientific Computing(G63.2043.001 / G22.2112.001)
-		NV_Ith_S(y, 0) = theta0;
+	// Bindel Scientific Computing(G63.2043.001 / G22.2112.001)
+	NV_Ith_S(y, 0) = theta0;
 	NV_Ith_S(y, 1) = 0;
 	/* Set up solver */
 	cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
@@ -96,6 +96,7 @@ int ODEtest1()
 	NV_Ith_S(y, 0) = theta0;
 	NV_Ith_S(y, 1) = 0;
 
+	//return NV_Ith_S(y,0);
 	//ekf(cvode_mem, &data, &y);
 	N_VDestroy_Serial(y); /* Free y vector */
 	CVodeFree(&cvode_mem); /* Free integrator memory */
