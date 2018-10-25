@@ -39,6 +39,37 @@ static int f2(realtype t, N_Vector y, N_Vector ydot, void *f_data)
 }
 
 
+// this needs to have R function inputs
+int(*fpointer2)(double*, double*, double*);
+
+static int forig(realtype t, N_Vector y, N_Vector ydot, void *f_data)
+{
+	realtype theta = NV_Ith_S(y, 0);
+	realtype omega = NV_Ith_S(y, 1);
+	realtype omegap = -sin(theta);
+	NV_Ith_S(ydot, 0) = omega;
+	NV_Ith_S(ydot, 1) = omegap;
+	return 0;
+}
+
+static int f_rtest2(double* t, double* y, double* ydot)
+{
+	ydot[0] = y[1];
+	ydot[1] = -sin(y[0]);
+	return 0;
+}
+
+
+static int f_wrap2(realtype t, N_Vector y, N_Vector ydot, void *f_data)
+{
+	// this will unpack the CVode inputs and convert them to Cpp.
+
+	//fpointer2(&t, (double*)(y->content), (double*)(ydot->content));
+	fpointer2(&t, (double*)(N_VGetArrayPointer(y)), (double*)(N_VGetArrayPointer(ydot)));
+	return 0;
+}
+
+
 
 
 
@@ -83,6 +114,8 @@ int testnew1() {
 	//a(0, 0) = 1;
 	//b(0, 0) = 2;
 	//k(0, 0) = 0;
+	fpointer2 = &f_rtest2;
+
 	double a;
 	double b;
 	double k;
@@ -435,6 +468,10 @@ int testnew1() {
 	mat P0 = 0.001*diagmat(ones(2,1));
 	data_new.cols(1,2).print("data matrix");
 	data_new.col(0).print("time vector");
+	fresult.xfilter = zeros(2, 200);
+	fresult.timefilter = zeros(200, 1);
+	fresult.Pfilter = zeros(2, 2, 200);
+	fresult.sdfilter = zeros(2, 200);
 	ukbf(obsfunc, data_new.cols(1, 2), data_new.col(0), x0, R, Q, P0, &fresult);
 	fresult.xfilter.print("filter results:");
 	//double* xfilternew = fresult.xfilter.memptr();

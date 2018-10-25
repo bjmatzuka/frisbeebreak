@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include <iostream>
 #include <armadillo>
+//#include <Rcpp.h>
 
 #include <stdlib.h>
 #include <math.h>
@@ -13,10 +14,12 @@
 
 using namespace std;
 using namespace arma;
+//using namespace Rcpp;
 
-int (*fpointer)(realtype t, N_Vector y, N_Vector ydot, void *f_data);
+// this needs to have R function inputs
+int (*fpointer)(double*, double*, double*);
 
-static int f(realtype t, N_Vector y, N_Vector ydot, void *f_data)
+static int forig(realtype t, N_Vector y, N_Vector ydot, void *f_data)
 {
 	realtype theta = NV_Ith_S(y, 0);
 	realtype omega = NV_Ith_S(y, 1);
@@ -26,10 +29,20 @@ static int f(realtype t, N_Vector y, N_Vector ydot, void *f_data)
 	return 0;
 }
 
+static int f_rtest(double* t, double* y, double* ydot)
+{
+	ydot[0] = y[1];
+	ydot[1] = -sin(y[0]);
+	return 0;
+}
+
 static int f_wrap(realtype t, N_Vector y, N_Vector ydot, void *f_data)
 {
-	// this will unpack the CVode inputs and convert them to Cpp. 
+	// this will unpack the CVode inputs and convert them to Cpp.
 
+	//fpointer(&t, (double*) y->content, (double*) ydot->content);
+	fpointer(&t, (double*)(N_VGetArrayPointer(y)), (double*)(N_VGetArrayPointer(ydot)));
+	return 0;
 }
 
 void UTpred(mat x, mat PP, vec time, UTdataOut *result) {
@@ -38,6 +51,11 @@ void UTpred(mat x, mat PP, vec time, UTdataOut *result) {
 	// alpha can be 1<= alpha <= 0.0001
 	// kappa can be 0 or 3 - state dimension (n)
 	// beta is set to be 2 for gaussian
+
+	// this is purely for testing purposes
+	//
+	fpointer = &f_rtest;
+
 	double aa;
 	double bb;
 	double kk;
@@ -180,7 +198,7 @@ void UTpred(mat x, mat PP, vec time, UTdataOut *result) {
 			//return -1;
 		}
 		/* Call CVodeMalloc to initialize the integrator memory */
-		flag = CVodeInit(cvode_mem, f, T0, y);
+		flag = CVodeInit(cvode_mem, f_wrap, T0, y);
 		if (flag < 0) {
 			fprintf(stderr, "Error in CVodeInit: %d\n", flag);
 			//return -1;
@@ -351,6 +369,7 @@ void ukbf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 	//PC = zeros(L, L, N);
 	//sd = zeros(L, N);
 
+
 	// assign initial values to the respective variables
 	result->xfilter.col(0) = x0;
 	result->Pfilter.slice(0) = P0;
@@ -440,6 +459,11 @@ void MatMultiply(double* a, double* b, double* c, double* N) {
 
 }
 
+void test_wrapper(double* time, double* y, double* out) {
+	*out = (*time)*(*y);
+	return;
+}
+
 void ukbf_R(double* obsf, double* data, long* M, double* time, long* N, double* x0, long* L, 
 	double* R, double* Q, double* P0,
 	double* xfilter, double* timefilter, double* Pfilter, double* sdfilter) {
@@ -450,6 +474,7 @@ void ukbf_R(double* obsf, double* data, long* M, double* time, long* N, double* 
 	// N = length of time/data
 	// L = no. of states
 	// M = no. of observed states (M<=L)
+	fpointer = &f_rtest;
 
 	// converts observation matrix to C++
 	mat OBSF = mat(obsf, *L, *L, false, true);
