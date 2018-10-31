@@ -39,9 +39,13 @@ static int f_rtest(double* t, double* y, double* ydot)
 static int f_wrap(realtype t, N_Vector y, N_Vector ydot, void *f_data)
 {
 	// this will unpack the CVode inputs and convert them to Cpp.
-
+	double *yin = N_VGetArrayPointer(y);
+	double *ydotin = N_VGetArrayPointer(ydot);
+	yin;
+	ydotin;
 	//fpointer(&t, (double*) y->content, (double*) ydot->content);
-	fpointer(&t, (double*)(N_VGetArrayPointer(y)), (double*)(N_VGetArrayPointer(ydot)));
+	//fpointer(&t, (double*)(N_VGetArrayPointer(y)), (double*)(N_VGetArrayPointer(ydot)));
+	fpointer(&t, yin, ydotin);
 	return 0;
 }
 
@@ -54,7 +58,7 @@ void UTpred(mat x, mat PP, vec time, UTdataOut *result) {
 
 	// this is purely for testing purposes
 	//
-	fpointer = &f_rtest;
+	//fpointer = &f_rtest;
 
 	double aa;
 	double bb;
@@ -154,9 +158,9 @@ void UTpred(mat x, mat PP, vec time, UTdataOut *result) {
 
 	// maybe not necessary, but here for now   //
 	mat data_orig_new;
-	data_orig_new.zeros(Num + 1, 3);
+	data_orig_new.zeros(Num + 1, n+1);
 	mat data_new;
-	data_new.zeros(Num + 1, 3);
+	data_new.zeros(Num + 1, n+1);
 
 	// set initial value for data_orig and data_new
 	data_orig_new(0, 0) = T0;
@@ -447,6 +451,463 @@ void ukbf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 	//result->sdfilter = sd;
 }
 
+void enkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result) {
+	// Ensemble Kalman Filter for solving SDE
+	//
+	//			INPUTS:
+	//		%			M : operator matrix for observations
+	//		%           data : data points used for filter(column vector)
+	//		%           time : time period observations occur over
+	//		%           x0 : initial condition for system
+	//		%           R : Observation noise covariance, constant
+	//		%           V : Process noise covariance
+	//		%           P0 : initial state filter covariance
+	//		%		    q : parameter values
+	//		%       OUTPUTS :
+	//		%           out.xfilter : state filter output
+	//		%           out.P : State covariance matrices for each time
+	//		%           out.time : time scale
+	//		%           out.data : original data used for filter
+	//		%           out.tsd : +/ -3 std.deviations of state filter
+
+
+		// initilize the variables
+	double L;
+	double N;
+	double Pn;
+
+	Pn = 50;             // number of particles (can be input; hardcode for now)
+	L = x0.n_elem;       // number of states
+	N = data.n_rows;     // length of observations
+	//xc = zeros(L, N);
+	//PC = zeros(L, L, N);
+	//sd = zeros(L, N);
+
+	// set up ensemble matrix
+	mat Ap = zeros(L, Pn);
+	mat A = repmat(x0, 1, Pn) + Q*randn(L, Pn);
+
+	// assign initial values to the respective variables
+	result->xfilter.col(0) = x0;
+	result->Pfilter.slice(0) = P0;
+	result->sdfilter.col(0) = sqrt(diagvec(P0));
+
+
+	// start filter loop
+	int i;
+	for (i = 1; i < N; ++i) {
+
+		// time vector decomposition into T0 and Tfinal   //
+		realtype T0;
+		realtype Tfinal;
+		T0 = time(i - 1);
+		Tfinal = time(i);
+
+		// Prediction Step: 
+		// push each 'particle' of the ensemble through the model
+		int ii;
+		for (ii = 0; ii < Pn; ++ii) {
+
+			// number of integration steps
+			int Num = 20;
+
+			// maybe not necessary, but here for now   //
+			mat data_orig_new;
+			data_orig_new.zeros(Num + 1, L + 1);
+			mat data_new;
+			data_new.zeros(Num + 1, L + 1);
+
+			// set initial value for data_orig and data_new
+			data_orig_new(0, 0) = T0;
+			data_new(0, 0) = T0;
+
+			// integrator intialization
+			//int Num = 200;
+			//realtype T0 = 0;
+			//realtype Tfinal = 10;
+			//realtype theta0 = 1;
+			realtype reltol = 1e-6;
+			realtype abstol = 1e-8;
+			realtype t;
+			int flag, k;
+			N_Vector y = NULL;
+			void* cvode_mem = NULL;
+			/* Create serial vector of length NEQ for I.C. */
+			y = N_VNew_Serial(L);
+
+			//NV_Ith_S(y, 0) = theta0;
+			//NV_Ith_S(y, 1) = 0;
+
+			// Set initial conditions for each integration from ensemble
+			int jj;
+			for (jj = 0; jj < A.n_rows; ++jj) {
+				NV_Ith_S(y, jj) = A(jj, ii);
+				data_orig_new(0, jj + 1) = A(jj, ii);
+			}
+
+			//cout << NV_Ith_S(y, 0) << "IC 1" << endl;
+			//cout << NV_Ith_S(y, 1) << "IC 2" << endl;
+			//Xi.print("IC Match");
+
+			/* Set up solver */
+			cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
+			if (cvode_mem == 0) {
+				fprintf(stderr, "Error in CVodeMalloc: could not allocate\n");
+				//return -1;
+			}
+			/* Call CVodeMalloc to initialize the integrator memory */
+			flag = CVodeInit(cvode_mem, f_wrap, T0, y);
+			if (flag < 0) {
+				fprintf(stderr, "Error in CVodeInit: %d\n", flag);
+				//return -1;
+			}
+			flag = CVodeSStolerances(cvode_mem, reltol, abstol);
+			if (flag < 0) {
+				fprintf(stderr, "Error in CVodeSStolerances: %d\n", flag);
+				//return -1;
+			}
+			//flag = CVodeSetStopTime(cvode_mem, Tfinal);
+			//if (flag < 0) {
+			//	fprintf(stderr, "Error in CVodeSetStopTime: %d\n", flag);
+			//}
+			//while (t<Tfinal){
+			//	flag = CVode(cvode_mem, Tfinal, y, &t, CV_NORMAL);
+			//	if (flag < 0) {
+			//				fprintf(stderr, "Error in CVode: %d\n", flag);
+			//return -1;
+			//		}
+			//data_orig_new(0, 1) = 1;
+			t = T0;
+			for (k = 1; k <= Num; ++k) {
+				realtype tout = T0 + (k*(Tfinal - T0) / Num);
+				//cout << "time out" << tout << endl;
+				if (CVode(cvode_mem, tout, y, &t, CV_NORMAL) < 0) {
+					fprintf(stderr, "Error in CVode: %d\n", flag);
+					//return -1;
+				}
+				//printf("%g %.16e %.16e\n", t, NV_Ith_S(y, 0), NV_Ith_S(y, 1));
+				//t.print("Time");
+
+				data_orig_new(k, 0) = t;
+				data_orig_new(k, 1) = NV_Ith_S(y, 0);
+				data_orig_new(k, 2) = NV_Ith_S(y, 1);
+
+				//data(k, 0) = t;
+				//data(k, 1) = data_orig(k, 1) + 0.01*randn(1)[0];
+				//data(k, 2) = data_orig(k, 2) + 0.01*randn(1)[0];
+
+			}
+
+			// end of ODE integration
+			N_VDestroy_Serial(y); /* Free y vector */
+			CVodeFree(&cvode_mem); /* Free integrator memory */
+								   //data_orig_new.print("check");
+			// store Ensemble integration results
+			Ap.col(ii) = trans(data_orig_new(Num, span(1, L)));
+
+		}
+		// end of particle integration routine
+
+		// Analysis Step: 
+		// update the estimate of the state given the obervation
+		// ie, calculate posterior through likelihood function
+
+		// calculate ensemble perturbation matrix(51)
+		mat I;
+		mat Abar;
+		mat Aprime;
+		I = (1 / Pn)*ones(Pn, Pn);
+		Abar = Ap*I;
+		Aprime = Ap - Abar;
+
+		// calculate the measurement matrix (54)
+		mat D;
+		D = repmat(trans(data.row(i)), 1, Pn);
+
+		//calculate measurement perturbation matrix (55)
+		mat E;
+		E = R*randn(data.n_cols, Pn);
+		//E = R*randn(length(data(k, :)'),N);
+
+		// calculate measurement error covariance matrix, C_ee (56)
+		mat C_ee;
+		C_ee = (1 / (Pn - 1))*E*trans(E);
+
+		// calculate matrix holding measurements of ensemble perturbations
+		// and other matrices required for update equation
+		// (58, 60, 61, 63)
+		mat Dprime;
+		mat S;
+		mat C;
+		mat X;
+
+		Dprime = D - obsf*A;
+		S = obsf*Aprime;
+		C = S*trans(S) + (Pn - 1)*C_ee;
+		X = eye(Pn,Pn) + trans(S)*solve(C, Dprime);
+
+		// Update equation, A^a (62)
+		A = Ap*X;
+
+		// find mean and covariance of updated ensemble for filter
+		mat meanA;
+		mat covA;
+
+		meanA = mean(A, 1);
+		covA = (1/(Pn-1))*(A - repmat(meanA,1,Pn))*trans(A - repmat(meanA,1,Pn));
+
+		result->xfilter.col(i) = meanA;
+		result->Pfilter.slice(i) = covA;
+		result->sdfilter.col(i) = sqrt(diagvec(result->Pfilter.slice(i)));
+
+	}
+}
+
+
+void etkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result) {
+	// Ensemble Transform Kalman Filter for solving SDE
+	//
+	//			INPUTS:
+	//		%			M : operator matrix for observations
+	//		%           data : data points used for filter(column vector)
+	//		%           time : time period observations occur over
+	//		%           x0 : initial condition for system
+	//		%           R : Observation noise covariance, constant
+	//		%           V : Process noise covariance
+	//		%           P0 : initial state filter covariance
+	//		%		    q : parameter values
+	//		%       OUTPUTS :
+	//		%           out.xfilter : state filter output
+	//		%           out.P : State covariance matrices for each time
+	//		%           out.time : time scale
+	//		%           out.data : original data used for filter
+	//		%           out.tsd : +/ -3 std.deviations of state filter
+
+
+	// initilize the variables
+	double L;
+	double N;
+	double Pn;
+	double r;
+	
+	r = 0.05;            // inflation factor
+	Pn = 50;             // number of particles (can be input; hardcode for now)
+	L = x0.n_elem;       // number of states
+	N = data.n_rows;     // length of observations
+						 //xc = zeros(L, N);
+						 //PC = zeros(L, L, N);
+						 //sd = zeros(L, N);
+
+						 // set up ensemble matrix
+	mat Ap = zeros(L, Pn);
+	mat A = repmat(x0, 1, Pn) + sqrt(P0)*randn(L, Pn);
+
+	// assign initial values to the respective variables
+	result->xfilter.col(0) = x0;
+	result->Pfilter.slice(0) = P0;
+	result->sdfilter.col(0) = sqrt(diagvec(P0));
+
+	mat invR;
+	invR = inv(R);
+	// start filter loop
+	int i;
+	for (i = 1; i < N; ++i) {
+
+		// time vector decomposition into T0 and Tfinal   //
+		realtype T0;
+		realtype Tfinal;
+		T0 = time(i - 1);
+		Tfinal = time(i);
+
+		// Prediction Step: 
+		// push each 'particle' of the ensemble through the model
+		int ii;
+		for (ii = 0; ii < Pn; ++ii) {
+
+			// number of integration steps
+			int Num = 20;
+
+			// maybe not necessary, but here for now   //
+			mat data_orig_new;
+			data_orig_new.zeros(Num + 1, L + 1);
+			mat data_new;
+			data_new.zeros(Num + 1, L + 1);
+
+			// set initial value for data_orig and data_new
+			data_orig_new(0, 0) = T0;
+			data_new(0, 0) = T0;
+
+			// integrator intialization
+			//int Num = 200;
+			//realtype T0 = 0;
+			//realtype Tfinal = 10;
+			//realtype theta0 = 1;
+			realtype reltol = 1e-6;
+			realtype abstol = 1e-8;
+			realtype t;
+			int flag, k;
+			N_Vector y = NULL;
+			void* cvode_mem = NULL;
+			/* Create serial vector of length NEQ for I.C. */
+			y = N_VNew_Serial(L);
+
+			//NV_Ith_S(y, 0) = theta0;
+			//NV_Ith_S(y, 1) = 0;
+
+			// Set initial conditions for each integration from ensemble
+			int jj;
+			for (jj = 0; jj < A.n_rows; ++jj) {
+				NV_Ith_S(y, jj) = A(jj, ii);
+				data_orig_new(0, jj + 1) = A(jj, ii);
+			}
+
+			//cout << NV_Ith_S(y, 0) << "IC 1" << endl;
+			//cout << NV_Ith_S(y, 1) << "IC 2" << endl;
+			//Xi.print("IC Match");
+
+			/* Set up solver */
+			cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
+			if (cvode_mem == 0) {
+				fprintf(stderr, "Error in CVodeMalloc: could not allocate\n");
+				//return -1;
+			}
+			/* Call CVodeMalloc to initialize the integrator memory */
+			flag = CVodeInit(cvode_mem, f_wrap, T0, y);
+			if (flag < 0) {
+				fprintf(stderr, "Error in CVodeInit: %d\n", flag);
+				//return -1;
+			}
+			flag = CVodeSStolerances(cvode_mem, reltol, abstol);
+			if (flag < 0) {
+				fprintf(stderr, "Error in CVodeSStolerances: %d\n", flag);
+				//return -1;
+			}
+			//flag = CVodeSetStopTime(cvode_mem, Tfinal);
+			//if (flag < 0) {
+			//	fprintf(stderr, "Error in CVodeSetStopTime: %d\n", flag);
+			//}
+			//while (t<Tfinal){
+			//	flag = CVode(cvode_mem, Tfinal, y, &t, CV_NORMAL);
+			//	if (flag < 0) {
+			//				fprintf(stderr, "Error in CVode: %d\n", flag);
+			//return -1;
+			//		}
+			//data_orig_new(0, 1) = 1;
+			t = T0;
+			for (k = 1; k <= Num; ++k) {
+				realtype tout = T0 + (k*(Tfinal - T0) / Num);
+				//cout << "time out" << tout << endl;
+				if (CVode(cvode_mem, tout, y, &t, CV_NORMAL) < 0) {
+					fprintf(stderr, "Error in CVode: %d\n", flag);
+					//return -1;
+				}
+				//printf("%g %.16e %.16e\n", t, NV_Ith_S(y, 0), NV_Ith_S(y, 1));
+				//t.print("Time");
+
+				data_orig_new(k, 0) = t;
+				data_orig_new(k, 1) = NV_Ith_S(y, 0);
+				data_orig_new(k, 2) = NV_Ith_S(y, 1);
+
+				//data(k, 0) = t;
+				//data(k, 1) = data_orig(k, 1) + 0.01*randn(1)[0];
+				//data(k, 2) = data_orig(k, 2) + 0.01*randn(1)[0];
+
+			}
+
+			// end of ODE integration
+			N_VDestroy_Serial(y); /* Free y vector */
+			CVodeFree(&cvode_mem); /* Free integrator memory */
+								   //data_orig_new.print("check");
+								   // store Ensemble integration results
+			Ap.col(ii) = trans(data_orig_new(Num, span(1, L)));
+
+		}
+		// end of particle integration routine
+
+		Ap = Ap + sqrt(Q)*randn(L, Pn);
+
+		// Analysis Step: 
+		// update the estimate of the state given the obervation
+		// ie, calculate posterior through likelihood function
+
+		// G, the ensemble obs matrix
+		mat G = zeros(data.n_cols,Pn);
+		double kk;
+		for (kk = 0; kk < Pn; ++kk) {
+			G.col(kk) = obsf*Ap.col(kk);
+		}
+
+		// calculate, Vobs, (nonlinear) obs matrix
+		mat I2;
+		mat Vbar;
+		mat Vobs;
+		I2 = (1 / Pn)*ones(Pn, Pn);
+		Vbar = G*I2;
+		Vobs = G - Vbar;
+
+		// calculate ensemble perturbation matrix(51)
+		mat I;
+		mat Abar;
+		mat Aprime;
+		I = (1 / Pn)*ones(Pn, Pn);
+		Abar = Ap*I;
+		Aprime = Ap - Abar;
+
+		// variance inflation step
+		Aprime = sqrt(1 + r)*Aprime;
+		Vobs = sqrt(1 + r)*Vobs;
+
+		// calculate SVD of J
+		mat J;
+		mat U;
+		vec s;
+		mat V;
+
+		J = ((Pn - 1) / (1 + r))*eye(Pn, Pn) + trans(Vobs)*invR*Vobs;
+		svd_econ(U, s, V, J);
+
+		// Kalman Gain
+		mat K;
+		K = Aprime*pinv(J)*trans(Vobs)*invR;
+
+		// update equations
+		// posterior mean, u_a
+		mat u_a;
+		u_a = Abar.col(0) + K*(trans(data.row(i)) - obsf*Abar.col(0));
+
+		// compute transformation matrix, T
+		mat T;
+		mat smat = diagmat(s);
+		T = sqrt(Pn - 1)*U*chol(inv(smat))*trans(U);
+
+		// posterior perturbation matrix of ensembles
+		mat Um;
+		Um = Aprime*T;
+		
+		// posterior ensembles
+		mat u_mean;
+		u_mean = repmat(u_a, 1, Pn);
+		A = u_mean + Um;
+
+		// find mean and covariance of updated ensemble for filter
+		mat meanA;
+		mat covA;
+
+		meanA = mean(A, 1);
+		covA = (1 / (Pn - 1))*(A - repmat(meanA, 1, Pn))*trans(A - repmat(meanA, 1, Pn));
+
+		result->xfilter.col(i) = meanA;
+		result->Pfilter.slice(i) = covA;
+		result->sdfilter.col(i) = sqrt(diagvec(result->Pfilter.slice(i)));
+
+	}
+}
+
+
+void srukf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result) {
+
+}
+
 void MatMultiply(double* a, double* b, double* c, double* N) {
 	mat A = mat(a, *N, *N, false, true);
 	mat B = mat(b, *N, *N, false, true);
@@ -466,7 +927,8 @@ void test_wrapper(double* time, double* y, double* out) {
 
 void ukbf_R(double* obsf, double* data, long* M, double* time, long* N, double* x0, long* L, 
 	double* R, double* Q, double* P0,
-	double* xfilter, double* timefilter, double* Pfilter, double* sdfilter) {
+	double* xfilter, double* timefilter, double* Pfilter, double* sdfilter, 
+	int (*rfuncinput)(double* , double*, double*)) {
 	
 	// wrapper that takes R inputs and converts them to C++ armadillo inputs for the C++ functions
 
@@ -474,7 +936,9 @@ void ukbf_R(double* obsf, double* data, long* M, double* time, long* N, double* 
 	// N = length of time/data
 	// L = no. of states
 	// M = no. of observed states (M<=L)
-	fpointer = &f_rtest;
+
+	//fpointer = &f_rtest;
+	fpointer = rfuncinput;
 
 	// converts observation matrix to C++
 	mat OBSF = mat(obsf, *L, *L, false, true);
@@ -491,7 +955,6 @@ void ukbf_R(double* obsf, double* data, long* M, double* time, long* N, double* 
 	// converts data to C++
 	mat DATA = mat(data, *N, *M, false, true);
 
-	//fpointer = &f;
 
 
 	// output components of filter
@@ -528,6 +991,75 @@ void ukbf_R(double* obsf, double* data, long* M, double* time, long* N, double* 
 	//timefilter = fresult.timefilter.memptr();
 	//sdfilter = fresult.sdfilter.memptr();
 	
+}
+
+void etkf_R(double* obsf, double* data, long* M, double* time, long* N, double* x0, long* L,
+	double* R, double* Q, double* P0,
+	double* xfilter, double* timefilter, double* Pfilter, double* sdfilter,
+	int (*rfuncinput)(double*, double*, double*)) {
+
+	// wrapper that takes R inputs and converts them to C++ armadillo inputs for the C++ functions
+
+	// understanding of pointer dimensions
+	// N = length of time/data
+	// L = no. of states
+	// M = no. of observed states (M<=L)
+
+	//fpointer = &f_rtest;
+	fpointer = rfuncinput;
+
+	// converts observation matrix to C++
+	mat OBSF = mat(obsf, *L, *L, false, true);
+	// converts initial condition to C++
+	vec X0 = vec(x0, *L, false, true);
+	// converts initial covariance, P0, to C++
+	mat PP0 = mat(P0, *L, *L, false, true);
+	// converts process noise covariance, R, to C++
+	mat R0 = mat(R, *L, *L, false, true);
+	// converts obs noise covariance, Q, to C++
+	mat Q0 = mat(Q, *M, *M, false, true);
+	// converts time to C++
+	vec TIME = vec(time, *N, false, true);
+	// converts data to C++
+	mat DATA = mat(data, *N, *M, false, true);
+
+	//fpointer = &f;
+
+
+	// output components of filter
+	//
+
+	FilterOut fresult;
+	// converts filter covariances to C++
+	//fresult.Pfilter = cube(Pfilter, *L, *L, *N, false, true);
+	fresult.Pfilter = cube(*L, *L, *N);
+	// converts filter means to C++
+	//fresult.xfilter = mat(xfilter, *L, *N, false, true);
+	fresult.xfilter = mat(*L, *N);
+	// converts filter standard deviation to C++
+	//fresult.sdfilter = mat(sdfilter, *L, *N, false, true);
+	fresult.sdfilter = mat(*L, *N);
+	// converts filter time to C++
+	//fresult.timefilter = vec(timefilter, *N, false, true);
+	fresult.timefilter = vec(*N);
+
+	// final call to filter function
+	etkf(OBSF, DATA, TIME, X0, R0, Q0, PP0, &fresult);
+
+	//double* xfiltert = fresult.xfilter.memptr();
+	mat xfiltertest = fresult.xfilter;
+
+	memcpy(xfilter, fresult.xfilter.memptr(), (*L)*(*N) * sizeof(double));
+	memcpy(sdfilter, fresult.sdfilter.memptr(), (*L)*(*N) * sizeof(double));
+	memcpy(Pfilter, fresult.Pfilter.memptr(), (*L)*(*L)*(*N) * sizeof(double));
+
+
+
+	//Pfilter = fresult.Pfilter.memptr();
+	//xfilter = fresult.xfilter.memptr();
+	//timefilter = fresult.timefilter.memptr();
+	//sdfilter = fresult.sdfilter.memptr();
+
 }
 
 //void UTpred_R(double* x, double* PP, double *N, double* time, double* yt, double* yPt, double* yPtc) {

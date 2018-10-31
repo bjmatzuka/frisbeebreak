@@ -465,6 +465,8 @@ int testnew1() {
 
 	// full UKF filter test
 	FilterOut fresult;
+	FilterOut fresult_enkf;
+	FilterOut fresult_etkf;
 	mat P0 = 0.001*diagmat(ones(2,1));
 	data_new.cols(1,2).print("data matrix");
 	data_new.col(0).print("time vector");
@@ -473,6 +475,18 @@ int testnew1() {
 	fresult.Pfilter = zeros(2, 2, 200);
 	fresult.sdfilter = zeros(2, 200);
 	ukbf(obsfunc, data_new.cols(1, 2), data_new.col(0), x0, R, Q, P0, &fresult);
+	
+	fresult_enkf.xfilter = zeros(2, 200);
+	fresult_enkf.timefilter = zeros(200, 1);
+	fresult_enkf.Pfilter = zeros(2, 2, 200);
+	fresult_enkf.sdfilter = zeros(2, 200);
+	enkf(obsfunc, data_new.cols(1, 2), data_new.col(0), x0, R, Q, P0, &fresult_enkf);
+	
+	fresult_etkf.xfilter = zeros(2, 200);
+	fresult_etkf.timefilter = zeros(200, 1);
+	fresult_etkf.Pfilter = zeros(2, 2, 200);
+	fresult_etkf.sdfilter = zeros(2, 200);
+	etkf(obsfunc, data_new.cols(1, 2), data_new.col(0), x0, R, Q, P0, &fresult_etkf);
 	fresult.xfilter.print("filter results:");
 	//double* xfilternew = fresult.xfilter.memptr();
 	//cout << "memptr lesson" << xfilternew << endl;
@@ -481,7 +495,16 @@ int testnew1() {
 
 	mat residual1 = zeros(200, 1);
 	residual1 = data_new.col(1) - trans(fresult.xfilter.row(0));
-	residual1.print("filter vs data:");
+	residual1.print("filter vs data: UKF");
+
+	mat residual2 = zeros(200, 1);
+	residual2 = data_new.col(1) - trans(fresult_enkf.xfilter.row(0));
+	residual2.print("filter vs data: EnKF");
+
+	mat residual3 = zeros(200, 1);
+	residual3 = data_new.col(1) - trans(fresult_etkf.xfilter.row(0));
+	residual3.print("filter vs data: ETKF");
+
 
 	mat fout = zeros(200, 2);
 	fout.col(0) = data_new.col(1);
