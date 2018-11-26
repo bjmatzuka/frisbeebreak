@@ -88,7 +88,7 @@ int testnew1() {
 	R.print("R:");
 
 	// system error covariance
-	mat Q = 1*eye<mat>(2, 2);
+	mat Q = 0.1*eye<mat>(2, 2);
 	Q.print("Q:");
 
 	// initial conditions for state vector
@@ -467,6 +467,7 @@ int testnew1() {
 	FilterOut fresult;
 	FilterOut fresult_enkf;
 	FilterOut fresult_etkf;
+	FilterOut fresult_srukf;
 	mat P0 = 0.001*diagmat(ones(2,1));
 	data_new.cols(1,2).print("data matrix");
 	data_new.col(0).print("time vector");
@@ -487,6 +488,13 @@ int testnew1() {
 	fresult_etkf.Pfilter = zeros(2, 2, 200);
 	fresult_etkf.sdfilter = zeros(2, 200);
 	etkf(obsfunc, data_new.cols(1, 2), data_new.col(0), x0, R, Q, P0, &fresult_etkf);
+
+
+	fresult_srukf.xfilter = zeros(2, 200);
+	fresult_srukf.timefilter = zeros(200, 1);
+	fresult_srukf.Pfilter = zeros(2, 2, 200);
+	fresult_srukf.sdfilter = zeros(2, 200);
+	etkf(obsfunc, data_new.cols(1, 2), data_new.col(0), x0, R, Q, P0, &fresult_srukf);
 	fresult.xfilter.print("filter results:");
 	//double* xfilternew = fresult.xfilter.memptr();
 	//cout << "memptr lesson" << xfilternew << endl;
@@ -504,6 +512,10 @@ int testnew1() {
 	mat residual3 = zeros(200, 1);
 	residual3 = data_new.col(1) - trans(fresult_etkf.xfilter.row(0));
 	residual3.print("filter vs data: ETKF");
+
+	mat residual4 = zeros(200, 1);
+	residual4 = data_new.col(1) - trans(fresult_srukf.xfilter.row(0));
+	residual4.print("filter vs data: SRUKF");
 
 
 	mat fout = zeros(200, 2);

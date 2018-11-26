@@ -36,12 +36,24 @@ struct FilterOut {
 	mat sdfilter;
 };
 
+struct SigmaOut {
+	mat X;
+	mat W;
+	vec wm;
+	vec wc;
+};
+
+struct ODEout {
+	vec odestate;
+};
+
 UKF_API_CPP void UTpred(mat x, mat PP, vec time, UTdataOut *result);
 UKF_API_CPP void UTdata(mat obsf, mat y, mat P, mat obsvec, UTdataOut *result);
 UKF_API_CPP void ukbf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result);
 UKF_API_CPP void enkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result);
 UKF_API_CPP void etkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result);
-
+UKF_API_CPP void srukf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result);
+UKF_API_CPP void predintegrator(double t0, double tf, vec state, ODEout *result);
 
 UKF_API void MatMultiply(double* a, double* b, double* c, double* N);
 
@@ -53,5 +65,7 @@ UKF_API void ukbf_R(double* obsf, double* data, long* M, double* time, long* N, 
 UKF_API void etkf_R(double* obsf, double* data, long* M, double* time, long* N, double* x0, long* L,
 	double* R, double* Q, double* P0,
 	double* xfilter, double* timefilter, double* Pfilter, double* sdfilter, int (*rfuncinput)(double*, double*, double*));
+
+
 //UKF_API void UTdata_R(double* obsf, double* y, double* P, double* obsvec, double* yt, double* yPt, double* yPtc);
 

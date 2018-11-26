@@ -49,6 +49,112 @@ static int f_wrap(realtype t, N_Vector y, N_Vector ydot, void *f_data)
 	return 0;
 }
 
+
+void predintegrator(double t0, double tf, vec state, ODEout *result) {
+	
+	// time vector decomposition into T0 and Tfinal   //
+	realtype T0;
+	realtype Tfinal;
+	T0 = t0;
+	Tfinal = tf;
+
+	// calculate number of states in system
+	double L;
+	L = state.n_elem;
+
+	// Prediction Step: 
+    // integration of model 
+
+		// number of integration steps
+		int Num = 20;
+
+		// maybe not necessary, but here for now   //
+		// set up matrix for storing results       //
+		mat integrate_store;
+		integrate_store.zeros(Num + 1, L + 1);
+
+
+		// set initial value for int_store
+		integrate_store(0, 0) = T0;
+
+		// integrator intialization
+		//int Num = 200;
+		//realtype T0 = 0;
+		//realtype Tfinal = 10;
+		//realtype theta0 = 1;
+		realtype reltol = 1e-6;
+		realtype abstol = 1e-8;
+		realtype t;
+		int flag, k, j;
+		N_Vector y = NULL;
+		void* cvode_mem = NULL;
+		/* Create serial vector of length NEQ for I.C. */
+		y = N_VNew_Serial(L);
+
+
+		// Set initial conditions for each integration from ensemble
+		int jj;
+		for (jj = 0; jj < state.n_rows; ++jj) {
+			NV_Ith_S(y, jj) = state(jj);
+			integrate_store(0, jj + 1) = state(jj);
+		}
+
+		/* Set up solver */
+		cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
+		if (cvode_mem == 0) {
+			fprintf(stderr, "Error in CVodeMalloc: could not allocate\n");
+			//return -1;
+		}
+		/* Call CVodeMalloc to initialize the integrator memory */
+		flag = CVodeInit(cvode_mem, f_wrap, T0, y);
+		if (flag < 0) {
+			fprintf(stderr, "Error in CVodeInit: %d\n", flag);
+			//return -1;
+		}
+		flag = CVodeSStolerances(cvode_mem, reltol, abstol);
+		if (flag < 0) {
+			fprintf(stderr, "Error in CVodeSStolerances: %d\n", flag);
+			//return -1;
+		}
+		//flag = CVodeSetStopTime(cvode_mem, Tfinal);
+		//if (flag < 0) {
+		//	fprintf(stderr, "Error in CVodeSetStopTime: %d\n", flag);
+		//}
+		//while (t<Tfinal){
+		//	flag = CVode(cvode_mem, Tfinal, y, &t, CV_NORMAL);
+		//	if (flag < 0) {
+		//				fprintf(stderr, "Error in CVode: %d\n", flag);
+		//return -1;
+		//		}
+		//data_orig_new(0, 1) = 1;
+		t = T0;
+		for (k = 1; k <= Num; ++k) {
+			realtype tout = T0 + (k*(Tfinal - T0) / Num);
+			//cout << "time out" << tout << endl;
+			if (CVode(cvode_mem, tout, y, &t, CV_NORMAL) < 0) {
+				fprintf(stderr, "Error in CVode: %d\n", flag);
+				//return -1;
+			}
+			//printf("%g %.16e %.16e\n", t, NV_Ith_S(y, 0), NV_Ith_S(y, 1));
+			//t.print("Time");
+
+			// store integration results from each iteration
+			integrate_store(k, 0) = t;
+			for (j = 1; j <= L; ++j) {
+				integrate_store(k, j) = NV_Ith_S(y, j - 1);
+			}
+			// end of results storage loop
+
+		}
+		// end of ODE integration
+
+		N_VDestroy_Serial(y); /* Free y vector */
+		CVodeFree(&cvode_mem); /* Free integrator memory */
+
+		// store final result of integration
+		result->odestate = trans(integrate_store(Num, span(1, L)));
+}
+
 void UTpred(mat x, mat PP, vec time, UTdataOut *result) {
 	// unscented tuning parameters: a, b, and k
 	//
@@ -58,7 +164,7 @@ void UTpred(mat x, mat PP, vec time, UTdataOut *result) {
 
 	// this is purely for testing purposes
 	//
-	//fpointer = &f_rtest;
+	fpointer = &f_rtest;
 
 	double aa;
 	double bb;
@@ -267,6 +373,60 @@ void UTpred(mat x, mat PP, vec time, UTdataOut *result) {
 	result->yPtc = Ptc;
 }
 
+void sigmapoints_sqrt(mat m, mat P, SigmaOut *result) {
+
+	// set up tuning parameters
+	double alpha = 1;
+	double beta = 2;
+	double kappa = 0;
+	
+
+	// initilize unscented transform parameters
+	double n;
+	double c;
+	double np;
+	double sc;
+	n = m.n_elem;
+	np = 2 * n + 1;
+
+	c = alpha*alpha*(n + kappa);
+	sc = sqrt(c);
+
+	mat X;
+	vec z0 = zeros(n, 1);
+	X = repmat(m, 1, np) + sc*(join_horiz(join_horiz(z0, -P), P));
+
+	// Form the weights
+	double lambda;
+	vec wm1;
+	vec wc1;
+	vec wn;
+	vec wm;
+	vec wc;
+
+	lambda = c - n;
+
+	wm1 = lambda / (n + lambda);
+	wc1 = wm1 + (1 - alpha*alpha - beta);
+	wn = 1 / (2 * (n + lambda));
+
+	wm = trans(join_horiz(wm1, repmat(wn, 1, 2*n)));
+	wc = trans(join_horiz(wc1, repmat(wn, 1, 2*n)));
+
+	mat tmp;
+	mat W;
+
+	tmp = eye(np, np) - repmat(wm, 1, np);
+	W = tmp*diagmat(wc)*trans(tmp);
+
+	result->W = W;
+	result->X = X;
+	result->wm = wm;
+	result->wc = wc;
+
+
+}
+
 void UTdata(mat obsf, mat y, mat P, mat obsvec, UTdataOut *result) {
 	// set up tuning parameters
 	mat alpha(1, 1);
@@ -449,7 +609,9 @@ void ukbf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 	//result->timefilter = time;
 	//result->Pfilter = PC;
 	//result->sdfilter = sd;
+
 }
+// end of UKBF function
 
 void enkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result) {
 	// Ensemble Kalman Filter for solving SDE
@@ -479,9 +641,7 @@ void enkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 	Pn = 50;             // number of particles (can be input; hardcode for now)
 	L = x0.n_elem;       // number of states
 	N = data.n_rows;     // length of observations
-	//xc = zeros(L, N);
-	//PC = zeros(L, L, N);
-	//sd = zeros(L, N);
+
 
 	// set up ensemble matrix
 	mat Ap = zeros(L, Pn);
@@ -492,120 +652,130 @@ void enkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 	result->Pfilter.slice(0) = P0;
 	result->sdfilter.col(0) = sqrt(diagvec(P0));
 
+	// integrator results initialization
+	ODEout odestate;
 
 	// start filter loop
 	int i;
 	for (i = 1; i < N; ++i) {
 
 		// time vector decomposition into T0 and Tfinal   //
-		realtype T0;
-		realtype Tfinal;
-		T0 = time(i - 1);
-		Tfinal = time(i);
+		//realtype T0;
+		//realtype Tfinal;
+		//T0 = time(i - 1);
+		//Tfinal = time(i);
 
 		// Prediction Step: 
 		// push each 'particle' of the ensemble through the model
 		int ii;
 		for (ii = 0; ii < Pn; ++ii) {
-
-			// number of integration steps
-			int Num = 20;
-
-			// maybe not necessary, but here for now   //
-			mat data_orig_new;
-			data_orig_new.zeros(Num + 1, L + 1);
-			mat data_new;
-			data_new.zeros(Num + 1, L + 1);
-
-			// set initial value for data_orig and data_new
-			data_orig_new(0, 0) = T0;
-			data_new(0, 0) = T0;
-
-			// integrator intialization
-			//int Num = 200;
-			//realtype T0 = 0;
-			//realtype Tfinal = 10;
-			//realtype theta0 = 1;
-			realtype reltol = 1e-6;
-			realtype abstol = 1e-8;
-			realtype t;
-			int flag, k;
-			N_Vector y = NULL;
-			void* cvode_mem = NULL;
-			/* Create serial vector of length NEQ for I.C. */
-			y = N_VNew_Serial(L);
-
-			//NV_Ith_S(y, 0) = theta0;
-			//NV_Ith_S(y, 1) = 0;
-
-			// Set initial conditions for each integration from ensemble
-			int jj;
-			for (jj = 0; jj < A.n_rows; ++jj) {
-				NV_Ith_S(y, jj) = A(jj, ii);
-				data_orig_new(0, jj + 1) = A(jj, ii);
-			}
-
-			//cout << NV_Ith_S(y, 0) << "IC 1" << endl;
-			//cout << NV_Ith_S(y, 1) << "IC 2" << endl;
-			//Xi.print("IC Match");
-
-			/* Set up solver */
-			cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
-			if (cvode_mem == 0) {
-				fprintf(stderr, "Error in CVodeMalloc: could not allocate\n");
-				//return -1;
-			}
-			/* Call CVodeMalloc to initialize the integrator memory */
-			flag = CVodeInit(cvode_mem, f_wrap, T0, y);
-			if (flag < 0) {
-				fprintf(stderr, "Error in CVodeInit: %d\n", flag);
-				//return -1;
-			}
-			flag = CVodeSStolerances(cvode_mem, reltol, abstol);
-			if (flag < 0) {
-				fprintf(stderr, "Error in CVodeSStolerances: %d\n", flag);
-				//return -1;
-			}
-			//flag = CVodeSetStopTime(cvode_mem, Tfinal);
-			//if (flag < 0) {
-			//	fprintf(stderr, "Error in CVodeSetStopTime: %d\n", flag);
-			//}
-			//while (t<Tfinal){
-			//	flag = CVode(cvode_mem, Tfinal, y, &t, CV_NORMAL);
-			//	if (flag < 0) {
-			//				fprintf(stderr, "Error in CVode: %d\n", flag);
-			//return -1;
-			//		}
-			//data_orig_new(0, 1) = 1;
-			t = T0;
-			for (k = 1; k <= Num; ++k) {
-				realtype tout = T0 + (k*(Tfinal - T0) / Num);
-				//cout << "time out" << tout << endl;
-				if (CVode(cvode_mem, tout, y, &t, CV_NORMAL) < 0) {
-					fprintf(stderr, "Error in CVode: %d\n", flag);
-					//return -1;
-				}
-				//printf("%g %.16e %.16e\n", t, NV_Ith_S(y, 0), NV_Ith_S(y, 1));
-				//t.print("Time");
-
-				data_orig_new(k, 0) = t;
-				data_orig_new(k, 1) = NV_Ith_S(y, 0);
-				data_orig_new(k, 2) = NV_Ith_S(y, 1);
-
-				//data(k, 0) = t;
-				//data(k, 1) = data_orig(k, 1) + 0.01*randn(1)[0];
-				//data(k, 2) = data_orig(k, 2) + 0.01*randn(1)[0];
-
-			}
-
-			// end of ODE integration
-			N_VDestroy_Serial(y); /* Free y vector */
-			CVodeFree(&cvode_mem); /* Free integrator memory */
-								   //data_orig_new.print("check");
-			// store Ensemble integration results
-			Ap.col(ii) = trans(data_orig_new(Num, span(1, L)));
+			// integration of model for each particle
+			predintegrator(time(i - 1), time(i), A.col(ii), &odestate);
+			// store results of integration for each particle
+			Ap.col(ii) = odestate.odestate;
 
 		}
+		// end of particle integration routine
+
+
+			//// number of integration steps
+			//int Num = 20;
+
+			//// maybe not necessary, but here for now   //
+			//mat data_orig_new;
+			//data_orig_new.zeros(Num + 1, L + 1);
+			//mat data_new;
+			//data_new.zeros(Num + 1, L + 1);
+
+			//// set initial value for data_orig and data_new
+			//data_orig_new(0, 0) = T0;
+			//data_new(0, 0) = T0;
+
+			//// integrator intialization
+			////int Num = 200;
+			////realtype T0 = 0;
+			////realtype Tfinal = 10;
+			////realtype theta0 = 1;
+			//realtype reltol = 1e-6;
+			//realtype abstol = 1e-8;
+			//realtype t;
+			//int flag, k;
+			//N_Vector y = NULL;
+			//void* cvode_mem = NULL;
+			///* Create serial vector of length NEQ for I.C. */
+			//y = N_VNew_Serial(L);
+
+			////NV_Ith_S(y, 0) = theta0;
+			////NV_Ith_S(y, 1) = 0;
+
+			//// Set initial conditions for each integration from ensemble
+			//int jj;
+			//for (jj = 0; jj < A.n_rows; ++jj) {
+			//	NV_Ith_S(y, jj) = A(jj, ii);
+			//	data_orig_new(0, jj + 1) = A(jj, ii);
+			//}
+
+			////cout << NV_Ith_S(y, 0) << "IC 1" << endl;
+			////cout << NV_Ith_S(y, 1) << "IC 2" << endl;
+			////Xi.print("IC Match");
+
+			///* Set up solver */
+			//cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
+			//if (cvode_mem == 0) {
+			//	fprintf(stderr, "Error in CVodeMalloc: could not allocate\n");
+			//	//return -1;
+			//}
+			///* Call CVodeMalloc to initialize the integrator memory */
+			//flag = CVodeInit(cvode_mem, f_wrap, T0, y);
+			//if (flag < 0) {
+			//	fprintf(stderr, "Error in CVodeInit: %d\n", flag);
+			//	//return -1;
+			//}
+			//flag = CVodeSStolerances(cvode_mem, reltol, abstol);
+			//if (flag < 0) {
+			//	fprintf(stderr, "Error in CVodeSStolerances: %d\n", flag);
+			//	//return -1;
+			//}
+			////flag = CVodeSetStopTime(cvode_mem, Tfinal);
+			////if (flag < 0) {
+			////	fprintf(stderr, "Error in CVodeSetStopTime: %d\n", flag);
+			////}
+			////while (t<Tfinal){
+			////	flag = CVode(cvode_mem, Tfinal, y, &t, CV_NORMAL);
+			////	if (flag < 0) {
+			////				fprintf(stderr, "Error in CVode: %d\n", flag);
+			////return -1;
+			////		}
+			////data_orig_new(0, 1) = 1;
+			//t = T0;
+			//for (k = 1; k <= Num; ++k) {
+			//	realtype tout = T0 + (k*(Tfinal - T0) / Num);
+			//	//cout << "time out" << tout << endl;
+			//	if (CVode(cvode_mem, tout, y, &t, CV_NORMAL) < 0) {
+			//		fprintf(stderr, "Error in CVode: %d\n", flag);
+			//		//return -1;
+			//	}
+			//	//printf("%g %.16e %.16e\n", t, NV_Ith_S(y, 0), NV_Ith_S(y, 1));
+			//	//t.print("Time");
+
+			//	data_orig_new(k, 0) = t;
+			//	data_orig_new(k, 1) = NV_Ith_S(y, 0);
+			//	data_orig_new(k, 2) = NV_Ith_S(y, 1);
+
+			//	//data(k, 0) = t;
+			//	//data(k, 1) = data_orig(k, 1) + 0.01*randn(1)[0];
+			//	//data(k, 2) = data_orig(k, 2) + 0.01*randn(1)[0];
+
+			//}
+
+			//// end of ODE integration
+			//N_VDestroy_Serial(y); /* Free y vector */
+			//CVodeFree(&cvode_mem); /* Free integrator memory */
+			//					   //data_orig_new.print("check");
+			//// store Ensemble integration results
+			//Ap.col(ii) = trans(data_orig_new(Num, span(1, L)));
+
+		//}
 		// end of particle integration routine
 
 		// Analysis Step: 
@@ -661,7 +831,9 @@ void enkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 		result->sdfilter.col(i) = sqrt(diagvec(result->Pfilter.slice(i)));
 
 	}
+	// end of filter loop iteration
 }
+// end of EnKF function
 
 
 void etkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result) {
@@ -694,11 +866,9 @@ void etkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 	Pn = 50;             // number of particles (can be input; hardcode for now)
 	L = x0.n_elem;       // number of states
 	N = data.n_rows;     // length of observations
-						 //xc = zeros(L, N);
-						 //PC = zeros(L, L, N);
-						 //sd = zeros(L, N);
 
-						 // set up ensemble matrix
+
+	// set up ensemble matrix
 	mat Ap = zeros(L, Pn);
 	mat A = repmat(x0, 1, Pn) + sqrt(P0)*randn(L, Pn);
 
@@ -707,6 +877,9 @@ void etkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 	result->Pfilter.slice(0) = P0;
 	result->sdfilter.col(0) = sqrt(diagvec(P0));
 
+	// initialize integration results
+	ODEout odestate;
+
 	mat invR;
 	invR = inv(R);
 	// start filter loop
@@ -714,114 +887,124 @@ void etkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 	for (i = 1; i < N; ++i) {
 
 		// time vector decomposition into T0 and Tfinal   //
-		realtype T0;
-		realtype Tfinal;
-		T0 = time(i - 1);
-		Tfinal = time(i);
+		//realtype T0;
+		//realtype Tfinal;
+		//T0 = time(i - 1);
+		//Tfinal = time(i);
 
 		// Prediction Step: 
 		// push each 'particle' of the ensemble through the model
 		int ii;
 		for (ii = 0; ii < Pn; ++ii) {
 
-			// number of integration steps
-			int Num = 20;
+			//integration of model with each particle 
+			predintegrator(time(i - 1), time(i), A.col(ii), &odestate);
 
-			// maybe not necessary, but here for now   //
-			mat data_orig_new;
-			data_orig_new.zeros(Num + 1, L + 1);
-			mat data_new;
-			data_new.zeros(Num + 1, L + 1);
-
-			// set initial value for data_orig and data_new
-			data_orig_new(0, 0) = T0;
-			data_new(0, 0) = T0;
-
-			// integrator intialization
-			//int Num = 200;
-			//realtype T0 = 0;
-			//realtype Tfinal = 10;
-			//realtype theta0 = 1;
-			realtype reltol = 1e-6;
-			realtype abstol = 1e-8;
-			realtype t;
-			int flag, k;
-			N_Vector y = NULL;
-			void* cvode_mem = NULL;
-			/* Create serial vector of length NEQ for I.C. */
-			y = N_VNew_Serial(L);
-
-			//NV_Ith_S(y, 0) = theta0;
-			//NV_Ith_S(y, 1) = 0;
-
-			// Set initial conditions for each integration from ensemble
-			int jj;
-			for (jj = 0; jj < A.n_rows; ++jj) {
-				NV_Ith_S(y, jj) = A(jj, ii);
-				data_orig_new(0, jj + 1) = A(jj, ii);
-			}
-
-			//cout << NV_Ith_S(y, 0) << "IC 1" << endl;
-			//cout << NV_Ith_S(y, 1) << "IC 2" << endl;
-			//Xi.print("IC Match");
-
-			/* Set up solver */
-			cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
-			if (cvode_mem == 0) {
-				fprintf(stderr, "Error in CVodeMalloc: could not allocate\n");
-				//return -1;
-			}
-			/* Call CVodeMalloc to initialize the integrator memory */
-			flag = CVodeInit(cvode_mem, f_wrap, T0, y);
-			if (flag < 0) {
-				fprintf(stderr, "Error in CVodeInit: %d\n", flag);
-				//return -1;
-			}
-			flag = CVodeSStolerances(cvode_mem, reltol, abstol);
-			if (flag < 0) {
-				fprintf(stderr, "Error in CVodeSStolerances: %d\n", flag);
-				//return -1;
-			}
-			//flag = CVodeSetStopTime(cvode_mem, Tfinal);
-			//if (flag < 0) {
-			//	fprintf(stderr, "Error in CVodeSetStopTime: %d\n", flag);
-			//}
-			//while (t<Tfinal){
-			//	flag = CVode(cvode_mem, Tfinal, y, &t, CV_NORMAL);
-			//	if (flag < 0) {
-			//				fprintf(stderr, "Error in CVode: %d\n", flag);
-			//return -1;
-			//		}
-			//data_orig_new(0, 1) = 1;
-			t = T0;
-			for (k = 1; k <= Num; ++k) {
-				realtype tout = T0 + (k*(Tfinal - T0) / Num);
-				//cout << "time out" << tout << endl;
-				if (CVode(cvode_mem, tout, y, &t, CV_NORMAL) < 0) {
-					fprintf(stderr, "Error in CVode: %d\n", flag);
-					//return -1;
-				}
-				//printf("%g %.16e %.16e\n", t, NV_Ith_S(y, 0), NV_Ith_S(y, 1));
-				//t.print("Time");
-
-				data_orig_new(k, 0) = t;
-				data_orig_new(k, 1) = NV_Ith_S(y, 0);
-				data_orig_new(k, 2) = NV_Ith_S(y, 1);
-
-				//data(k, 0) = t;
-				//data(k, 1) = data_orig(k, 1) + 0.01*randn(1)[0];
-				//data(k, 2) = data_orig(k, 2) + 0.01*randn(1)[0];
-
-			}
-
-			// end of ODE integration
-			N_VDestroy_Serial(y); /* Free y vector */
-			CVodeFree(&cvode_mem); /* Free integrator memory */
-								   //data_orig_new.print("check");
-								   // store Ensemble integration results
-			Ap.col(ii) = trans(data_orig_new(Num, span(1, L)));
+			// store integration results for each particle
+			Ap.col(ii) = odestate.odestate;
 
 		}
+		// end of integration routine for each sigma
+
+
+		//	// number of integration steps
+		//	int Num = 20;
+
+		//	// maybe not necessary, but here for now   //
+		//	mat data_orig_new;
+		//	data_orig_new.zeros(Num + 1, L + 1);
+		//	mat data_new;
+		//	data_new.zeros(Num + 1, L + 1);
+
+		//	// set initial value for data_orig and data_new
+		//	data_orig_new(0, 0) = T0;
+		//	data_new(0, 0) = T0;
+
+		//	// integrator intialization
+		//	//int Num = 200;
+		//	//realtype T0 = 0;
+		//	//realtype Tfinal = 10;
+		//	//realtype theta0 = 1;
+		//	realtype reltol = 1e-6;
+		//	realtype abstol = 1e-8;
+		//	realtype t;
+		//	int flag, k;
+		//	N_Vector y = NULL;
+		//	void* cvode_mem = NULL;
+		//	/* Create serial vector of length NEQ for I.C. */
+		//	y = N_VNew_Serial(L);
+
+		//	//NV_Ith_S(y, 0) = theta0;
+		//	//NV_Ith_S(y, 1) = 0;
+
+		//	// Set initial conditions for each integration from ensemble
+		//	int jj;
+		//	for (jj = 0; jj < A.n_rows; ++jj) {
+		//		NV_Ith_S(y, jj) = A(jj, ii);
+		//		data_orig_new(0, jj + 1) = A(jj, ii);
+		//	}
+
+		//	//cout << NV_Ith_S(y, 0) << "IC 1" << endl;
+		//	//cout << NV_Ith_S(y, 1) << "IC 2" << endl;
+		//	//Xi.print("IC Match");
+
+		//	/* Set up solver */
+		//	cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
+		//	if (cvode_mem == 0) {
+		//		fprintf(stderr, "Error in CVodeMalloc: could not allocate\n");
+		//		//return -1;
+		//	}
+		//	/* Call CVodeMalloc to initialize the integrator memory */
+		//	flag = CVodeInit(cvode_mem, f_wrap, T0, y);
+		//	if (flag < 0) {
+		//		fprintf(stderr, "Error in CVodeInit: %d\n", flag);
+		//		//return -1;
+		//	}
+		//	flag = CVodeSStolerances(cvode_mem, reltol, abstol);
+		//	if (flag < 0) {
+		//		fprintf(stderr, "Error in CVodeSStolerances: %d\n", flag);
+		//		//return -1;
+		//	}
+		//	//flag = CVodeSetStopTime(cvode_mem, Tfinal);
+		//	//if (flag < 0) {
+		//	//	fprintf(stderr, "Error in CVodeSetStopTime: %d\n", flag);
+		//	//}
+		//	//while (t<Tfinal){
+		//	//	flag = CVode(cvode_mem, Tfinal, y, &t, CV_NORMAL);
+		//	//	if (flag < 0) {
+		//	//				fprintf(stderr, "Error in CVode: %d\n", flag);
+		//	//return -1;
+		//	//		}
+		//	//data_orig_new(0, 1) = 1;
+		//	t = T0;
+		//	for (k = 1; k <= Num; ++k) {
+		//		realtype tout = T0 + (k*(Tfinal - T0) / Num);
+		//		//cout << "time out" << tout << endl;
+		//		if (CVode(cvode_mem, tout, y, &t, CV_NORMAL) < 0) {
+		//			fprintf(stderr, "Error in CVode: %d\n", flag);
+		//			//return -1;
+		//		}
+		//		//printf("%g %.16e %.16e\n", t, NV_Ith_S(y, 0), NV_Ith_S(y, 1));
+		//		//t.print("Time");
+
+		//		data_orig_new(k, 0) = t;
+		//		data_orig_new(k, 1) = NV_Ith_S(y, 0);
+		//		data_orig_new(k, 2) = NV_Ith_S(y, 1);
+
+		//		//data(k, 0) = t;
+		//		//data(k, 1) = data_orig(k, 1) + 0.01*randn(1)[0];
+		//		//data(k, 2) = data_orig(k, 2) + 0.01*randn(1)[0];
+
+		//	}
+
+		//	// end of ODE integration
+		//	N_VDestroy_Serial(y); /* Free y vector */
+		//	CVodeFree(&cvode_mem); /* Free integrator memory */
+		//						   //data_orig_new.print("check");
+		//						   // store Ensemble integration results
+		//	Ap.col(ii) = trans(data_orig_new(Num, span(1, L)));
+
+		//}
 		// end of particle integration routine
 
 		Ap = Ap + sqrt(Q)*randn(L, Pn);
@@ -901,12 +1084,386 @@ void etkf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut 
 		result->sdfilter.col(i) = sqrt(diagvec(result->Pfilter.slice(i)));
 
 	}
+	// end of filter loop iteration; each iteration is a data point
 }
+// end of ETKF function
 
 
 void srukf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result) {
+//	%Sqrt UKBF : Square Root Unscented Kalman Filter
+//		%
+//		%   This implements a continuous - discrete square root unscented kalman bucy filter
+//		% to estimate the state of a nonlinear observation function.
+//		%
+//		%      INPUTS :
+//		%           dynfun : rhs of ODE system(model) from which parameters are
+//		%                   being estimated(column vector)
+//		%			obsfun : general function for observations(d = G(x, w))
+//		%			data : data points used for filter(column vector)
+//		%			time : time period observations occur over
+//		%           x0 : initial guess of parameter value
+//		%           R : Measurement noise covariance, constant
+//		%           V : Process noise covariance, constant
+//		%           Px0 : initial covariance of parameter values
+//		%           q : parameter values
+//		%       OUTPUTS :
+//		%           out.xfilter : filter of parameter estimates(last value is final
+//		%                        estimate of parameter; best fit)
+//		%			out.Px : covariance matrix at each filter point
+//		%           out.time : time scale
+//		%           out.data : original data used for estimation
+//		%           out.tsd : three standard deviations for estimates
+//		%
+//		% Brett Matzuka, qP, November 2018
+//		%
+//		% implementation was done using 'Kalman Filtering and Neural Networks'
+//		% edited by Haykin, chapter 7
+	
+// initilize the variales
+	double L;
+	double N;
 
+	L = x0.n_elem;
+	N = data.n_rows;
+
+
+	// assign initial values to the respective variables
+	result->xfilter.col(0) = x0;
+	result->Pfilter.slice(0) = P0;
+	result->sdfilter.col(0) = sqrt(diagvec(P0));
+	
+	//correct initial covariances
+	R = chol(R);
+	Q = chol(Q);
+
+	// set up inputs
+	vec xminus;
+	mat Pminus;
+    // initialize storage of sigma point and ode info
+	SigmaOut sigmaparms;
+	ODEout odestate;
+
+	// main filter loop
+
+	// start filter loop
+	int i;
+	for (i = 1; i < N; ++i) {
+		// time update of state and covariance
+		xminus = result->xfilter.col(i - 1);
+		Pminus = result->Pfilter.slice(i - 1);
+
+		// create sigma point stencil for model
+		sigmapoints_sqrt(xminus, Pminus, &sigmaparms);
+
+		mat Xhat = zeros(L, 2 * L + 1);
+		// Integration loop: passing sigma point stencil through the dynamic model and propagating
+		// forward
+		//
+		// Prediction Step: 
+		// push each sigma point of the stencil through the model
+		int ii;
+		for (ii = 0; ii < sigmaparms.X.n_cols; ++ii) {
+
+			//integration of model for each sigma point 
+			mat stateinit;
+			stateinit = sigmaparms.X;
+			predintegrator(time(i - 1), time(i), stateinit.col(ii), &odestate);
+
+			// store integration results for each particle
+			Xhat.col(ii) = odestate.odestate;
+
+		}
+		// end of particle integration routine
+
+		//int Num;
+		//Num = 20;
+
+		//// time vector decomposition into T0 and Tfinal   //
+		//realtype T0;
+		//realtype Tfinal;
+		//T0 = time(i-1);
+		//Tfinal = time(i);
+
+		//// maybe not necessary, but here for now   //
+		//mat data_orig_new;
+		//data_orig_new.zeros(Num + 1, L + 1);
+		//mat data_new;
+		//data_new.zeros(Num + 1, L + 1);
+
+		//// set initial value for data_orig and data_new
+		//data_orig_new(0, 0) = T0;
+		//data_new(0, 0) = T0;
+
+		//// for loop over the sigma points
+		//int ii;
+		//for (ii = 0; ii < sigmaparms.X.n_cols; ++ii) {
+
+		//	
+
+		//	// integrator intialization
+		//	//int Num = 200;
+		//	//realtype T0 = 0;
+		//	//realtype Tfinal = 10;
+		//	//realtype theta0 = 1;
+		//	realtype reltol = 1e-6;
+		//	realtype abstol = 1e-8;
+		//	realtype t;
+		//	int flag, k;
+		//	N_Vector y = NULL;
+		//	void* cvode_mem = NULL;
+		//	/* Create serial vector of length NEQ for I.C. */
+		//	y = N_VNew_Serial(L);
+
+		//	//NV_Ith_S(y, 0) = theta0;
+		//	//NV_Ith_S(y, 1) = 0;
+		//	int jj;
+		//	for (jj = 0; jj < sigmaparms.X.n_rows; ++jj) {
+		//		NV_Ith_S(y, jj) = sigmaparms.X(jj, ii);
+		//		data_orig_new(0, jj + 1) = sigmaparms.X(jj, ii);
+		//	}
+		//	//cout << NV_Ith_S(y, 0) << "IC 1" << endl;
+		//	//cout << NV_Ith_S(y, 1) << "IC 2" << endl;
+		//	//Xi.print("IC Match");
+
+		//	/* Set up solver */
+		//	cvode_mem = CVodeCreate(CV_ADAMS, CV_FUNCTIONAL);
+		//	if (cvode_mem == 0) {
+		//		fprintf(stderr, "Error in CVodeMalloc: could not allocate\n");
+		//		//return -1;
+		//	}
+		//	/* Call CVodeMalloc to initialize the integrator memory */
+		//	flag = CVodeInit(cvode_mem, f_wrap, T0, y);
+		//	if (flag < 0) {
+		//		fprintf(stderr, "Error in CVodeInit: %d\n", flag);
+		//		//return -1;
+		//	}
+		//	flag = CVodeSStolerances(cvode_mem, reltol, abstol);
+		//	if (flag < 0) {
+		//		fprintf(stderr, "Error in CVodeSStolerances: %d\n", flag);
+		//		//return -1;
+		//	}
+		//	//flag = CVodeSetStopTime(cvode_mem, Tfinal);
+		//	//if (flag < 0) {
+		//	//	fprintf(stderr, "Error in CVodeSetStopTime: %d\n", flag);
+		//	//}
+		//	//while (t<Tfinal){
+		//	//	flag = CVode(cvode_mem, Tfinal, y, &t, CV_NORMAL);
+		//	//	if (flag < 0) {
+		//	//				fprintf(stderr, "Error in CVode: %d\n", flag);
+		//	//return -1;
+		//	//		}
+		//	//data_orig_new(0, 1) = 1;
+		//	t = T0;
+		//	for (k = 1; k <= Num; ++k) {
+		//		realtype tout = T0 + (k*(Tfinal - T0) / Num);
+		//		//cout << "time out" << tout << endl;
+		//		if (CVode(cvode_mem, tout, y, &t, CV_NORMAL) < 0) {
+		//			fprintf(stderr, "Error in CVode: %d\n", flag);
+		//			//return -1;
+		//		}
+		//		//printf("%g %.16e %.16e\n", t, NV_Ith_S(y, 0), NV_Ith_S(y, 1));
+		//		//t.print("Time");
+
+		//		data_orig_new(k, 0) = t;
+		//		data_orig_new(k, 1) = NV_Ith_S(y, 0);
+		//		data_orig_new(k, 2) = NV_Ith_S(y, 1);
+
+		//		//data(k, 0) = t;
+		//		//data(k, 1) = data_orig(k, 1) + 0.01*randn(1)[0];
+		//		//data(k, 2) = data_orig(k, 2) + 0.01*randn(1)[0];
+
+		//	}
+		//	// end of ODE integration
+
+		//	N_VDestroy_Serial(y); /* Free y vector */
+		//	CVodeFree(&cvode_mem); /* Free integrator memory */
+		//						   //data_orig_new.print("check");
+
+		//						   // store state at final integrator time
+		//	Xhat.col(ii) = trans(data_orig_new(Num, span(1, L)));
+		//}
+		// for loop for integration occurs here!!!
+		//
+		//
+		//end of integration loop
+
+		// generate the prior estimate for the state, weighted mean. (7.54)
+		mat xhat_;
+		xhat_ = Xhat*sigmaparms.wm;
+
+		// measurement update of covariance
+		//   this is where square root ukf differs from ukf
+		// --------------------------------------------------
+		mat Xstar;
+		Xstar = Xhat - repmat(xhat_, 1, 2 * L + 1);
+		double sqrt_wc;
+		sqrt_wc = sqrt(sigmaparms.wc(1));
+
+		// qr factorization
+		mat waste;
+		mat Sk_;
+		qr_econ(waste, Sk_, trans(join_horiz(sqrt_wc*Xstar.cols(1, 2 * L + 1), Q)));
+
+		// cholesky update to complete the covariance prediction
+		if (sigmaparms.wc(0) > 0) {
+			Sk_ = chol(Sk_*trans(Sk_) + (sqrt(sqrt(abs(sigmaparms.wc(0))))*Xstar.col(0))*trans(sqrt(sqrt(abs(sigmaparms.wc(0))))*Xstar.col(0)), "lower");
+		}
+		else {
+			Sk_ = chol(Sk_*trans(Sk_) - (sqrt(sqrt(abs(sigmaparms.wc(0))))*Xstar.col(0))*trans(sqrt(sqrt(abs(sigmaparms.wc(0))))*Xstar.col(0)), "lower");
+		}
+
+		// making sigma points for observations
+		sigmapoints_sqrt(xhat_, Sk_, &sigmaparms);
+
+		mat Xminus;
+		Xminus = sigmaparms.X;
+
+		// push the stencil through the observation function
+		mat Y = zeros(size(data,2), 2 * L + 1);
+		int jj;
+		for (jj = 0; jj < 2 + L + 1; ++jj) {
+			Y.col(jj) = obsf*Xminus.col(jj);
+		}
+
+		// prior estimate for observation
+		mat yhat_;
+		yhat_ = Y*sigmaparms.wm;
+
+		// measurement update of covariance
+		//   this is where square root ukf differs from ukf
+		// --------------------------------------------------
+		mat Ystar;
+		Ystar = Y - repmat(yhat_, 1, 2 * L + 1);
+
+		// qr factorization
+		mat waste2;
+		mat Syk;
+		qr_econ(waste2, Syk, trans(join_horiz(sqrt_wc*Ystar.cols(1, 2 * L + 1), R)));
+
+		// cholesky update to complete the covariance prediction
+		if (sigmaparms.wc(0) > 0) {
+			Syk = chol(Syk*trans(Syk) + (sqrt(sqrt(abs(sigmaparms.wc(0))))*Ystar.col(0))*trans(sqrt(sqrt(abs(sigmaparms.wc(0))))*Ystar.col(0)), "lower");
+		}
+		else {
+			Syk = chol(Syk*trans(Syk) - (sqrt(sqrt(abs(sigmaparms.wc(0))))*Ystar.col(0))*trans(sqrt(sqrt(abs(sigmaparms.wc(0))))*Ystar.col(0)), "lower");
+		}
+
+
+		// obsevation cross covariance
+		mat Pxy;
+		Pxy = Xminus*sigmaparms.W*trans(Y);
+
+		// Gain matrix
+		mat Kk;
+		Kk = solve(solve(Pxy, trans(Syk)), Syk);
+
+		// measurement update of state filter
+		vec xplus;
+		xplus = xhat_ + Kk*(trans(data.row(i)) - yhat_);
+
+		// correct covariance: U
+		mat U;
+		U = Kk*Syk;
+
+		// measurement update of covariance parameter
+		Sk_ = trans(Sk_);
+		int kk;
+		for (kk = 0; kk < size(data, 2); ++kk) {
+			Sk_ = chol(Sk_*trans(Sk_) - U.col(kk)*trans(U.col(kk)), "lower");
+		}
+
+		// storing covariance
+		mat Swplus;
+		Swplus = Sk_;
+
+		// store filter and covariances
+		result->xfilter.col(i) = xplus;
+		result->Pfilter.slice(i) = Swplus*trans(Swplus);
+		result->sdfilter.col(i) = sqrt(diagvec(Swplus*trans(Swplus)));
+
+	}
+	// end of main filter loop; looping over observations, doing main filter iterations
+
+// end of srukf function
 }
+// end of srukf function
+
+
+void ekbf(mat obsf, mat data, vec time, vec x0, mat R, mat Q, mat P0, FilterOut *result) {
+	
+	// Brett Matzuka, qP, Nov. 2018
+	//
+	//
+	//	EKBF Extended Kalman Bucy Filter
+	//	%
+	//	%  this implements a continuous - discrete extended kalman filter
+	//	%  using Automatic Differentiation to calculate the jacobian
+	//	%
+	//	%     INPUTS:
+	//          model : rhs of ODE system(include values for parameters)
+	//	%		obser : general function for observations(z = h(x))
+	//	%		data : data points used for filter(column vectors)
+	//	%		time : time period observations occur over
+	//	%		   R : covariance noise for data, constant
+	//	%          Q : covariance noise for process, constant
+	//	%          x0 : initial condition for model
+	//	%          P0 : initial condition for covariance
+	//	%          q : parameter values
+	//	%          fdad : describes how to calculate jacobian
+	//	%               fdad = 0 (default); finite difference
+	//	%               fdad = 1; Automatic differentiation jacobian
+	//	%          options: ode solver options
+	//	%     OUTPUTS :
+	//	%          out.xfilter : filter output
+	//	%          out.time : time scale
+	//	%          out.P : covariance matrices for each time
+	//	%          out.sd : +/ -standard deviations
+
+
+	// initilize the variales
+	double L;
+	double N;
+
+	L = x0.n_elem;
+	N = data.n_rows;
+
+
+	// assign initial values to the respective variables
+	result->xfilter.col(0) = x0;
+	result->Pfilter.slice(0) = P0;
+	result->sdfilter.col(0) = sqrt(diagvec(P0));
+
+
+	// start filter loop
+	int i;
+	for (i = 1; i < N; ++i) {
+
+		// PREDICTION STEP:  integration of model state mean
+		// 
+		//
+		// integration goes here!
+		//
+		//
+		// end of integration loop
+
+		// integration of model state covariance
+		//
+		//
+		// integration of covariance goes here!
+		// 
+		//
+		// end of covariance integration loop
+
+
+
+		// CORRECTION STEP
+		mat K;
+
+
+	}
+	// end of filter loop
+}
+// end of EKBF code
 
 void MatMultiply(double* a, double* b, double* c, double* N) {
 	mat A = mat(a, *N, *N, false, true);
